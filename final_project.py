@@ -12,9 +12,11 @@ from tqdm import tqdm
 from functools import lru_cache
 
 
-# TODO: Block that has the different options for utility functions. Running the block with a specific choice should
-# TODO: generate a widget with the required values/call the correct utility.
+
 class Utils:
+    """
+    This class provides statistic and parsing utilities to be used by the other classes
+    """
     DATA_PATH = r"https://raw.githubusercontent.com/odedwer/stats_final_project_datasets/main/"
 
     @staticmethod
@@ -131,15 +133,20 @@ class Utils:
         print(f"Percentage of permutations below the statistic: f{np.mean(perm_dist < statistic)}")
 
     @staticmethod
-    def get_t_test_func(q, col1, col2, method, alternative):
-        if not (Utils.validate_var_name(q, col1) and Utils.validate_var_name(q, col2)):
+    def get_t_test_func(q, col1, col2, col2_val1, col2_val2, method, alternative):
+        if not (Utils.validate_var_name(q, col1)
+                and Utils.validate_var_name(q, col2) and
+                Utils.validate_var_value(q, col2, col2_val1) and
+                Utils.validate_var_value(q, col2, col2_val2)):
             return None
         if method == "paired":
-            return lambda df, col1=col1, col2=col2, alternative=alternative: stats.ttest_rel(df[col1], df[col2],
-                                                                                             alternative=alternative)
+            return lambda df, col1=col1, col2=col2, col2_val1=col2_val1, col2_val2=col2_val2, alternative=alternative: \
+                stats.ttest_rel(df.loc[df[col2] == col2_val1, col1], df.loc[df[col2] == col2_val2, col1],
+                                alternative=alternative)
         elif method == "independent":
-            return lambda df, col1=col1, col2=col2, alternative=alternative: stats.ttest_ind(df[col1], df[col2],
-                                                                                             alternative=alternative)
+            return lambda df, col1=col1, col2=col2, col2_val1=col2_val1, col2_val2=col2_val2, alternative=alternative: \
+                stats.ttest_ind(df.loc[df[col2] == col2_val1, col1], df.loc[df[col2] == col2_val2, col1],
+                                alternative=alternative)
         else:
             print(f"t-test can only be for paired/independent!", file=sys.stderr)
 
@@ -148,7 +155,17 @@ class Utils:
         if col1 not in q._dataset.columns:
             print(f"{col1} isn't a variable in the dataset!\n possible variables: {q._dataset.columns}",
                   file=sys.stderr)
-            # return None
+            return False
+        return True
+
+    @staticmethod
+    def validate_var_value(q, col, val):
+        if val not in q._dataset[col]:
+            print(
+                f"{val} isn't a value of in the dataset in column {col}!\n possible values: {q._dataset[col].unique()}",
+                file=sys.stderr)
+            return False
+        return True
 
     @staticmethod
     def _get_general_two_groups_func(q, col1, col2, col_func, groups_func):
@@ -166,13 +183,25 @@ class Utils:
         return Utils._get_general_two_groups_func(q, col1, col2, np.median, lambda a, b: a - b)
 
 
+class GUI:
+    """
+    This class generates a GUI for a question - providing different plots, statistical tests etc. via
+    manual_interact with Run button for choosing the parameters (if plot - which type? what are the x,y,color values?
+    If test, between which rows? and so on)
+    On "Run" press, will call the corresponding Utils function with the chosen options. The Utils function should
+    validate the chosen options and print an error message if there is a problem with the options.
+    """
+    pass
+
+
 class ProjectQuestion:
     OUTLIER_THRESH = 2.5  # outlier threshold in multiples of standard deviation
     INLIER_THRESH = 1.5  # outlier threshold in multiples of standard deviation
     DEF_NUM_ENTRIES = 100
 
-    def __init__(self, group: int, q_type: str, q_params: tuple, outliers: bool):
+    def __init__(self, group: int, q_type: str, q_params: tuple, outliers: bool, idx):
         self._group = group
+        self._idx = idx
         self._num_entries = ProjectQuestion.DEF_NUM_ENTRIES
         self._q_type = q_type
         self._full_dataset = Utils.get_dataset(q_params[0])
@@ -194,17 +223,20 @@ class ProjectQuestion:
 
     def __repr__(self):
         if self._q_type == 'Chi squared':
-            return "Is %s and %s independent?" % tuple(self._vars)
+            return "Are %s and %s independent?" % tuple(self._vars)
         elif self._q_type == 'ANOVA 2-way':
-            return "Does %s and %s have an effect on %s?" % (self._vars[1], self._vars[2], self._vars[0])
+            return "Do %s or %s have an effect on %s? Does the effect of %s change for different levels of %s?" % (
+                self._vars[1], self._vars[2], self._vars[0], self._vars[1], self._vars[2])
         elif self._q_type == 'ANOVA 1-way' or self._q_type == 'Repeated Measures ANOVA':
             return "Does %s have an effect on %s?" % (self._vars[1], self._vars[0])
         elif self._q_type == 'Regression':
             return "What is the relationship between %s and %s and is it significant?" % tuple(self._vars)
         elif self._q_type == 'independent samples t-test' or self._q_type == 'paired t-test':
+            unique_y = self._dataset[self._vars[1]].unique()
             self._seed()
-            return "Is %s %s than %s?" % (
-                self._vars[0], np.random.choice(['larger', 'smaller', 'different']), self._vars[1])
+            return "Is %s %s for %s=%s compared to %s=%s?" % (
+                self._vars[0], np.random.choice(['larger', 'smaller', 'different']), self._vars[1], unique_y[0],
+                self._vars[1], unique_y[1])
         elif self._q_type == 'Mann Whitney':
             return "Do %s distributions differ based on %s?" % tuple(self._vars)
 
@@ -219,6 +251,7 @@ class ProjectQuestion:
     def _choose_dataset(self):
         relevant_columns_dataset = self._full_dataset[self._vars]
         relevant_columns_dataset: pd.DataFrame = relevant_columns_dataset.dropna()
+        relevant_columns_dataset = relevant_columns_dataset.reset_index(drop=True)
         # choose the number of entries
         if relevant_columns_dataset.shape[0] < ProjectQuestion.DEF_NUM_ENTRIES:
             self._num_entries = relevant_columns_dataset.shape[0]
@@ -227,9 +260,12 @@ class ProjectQuestion:
         #####
         # find out/inliers if the data has no categorical variables
         if self._q_type != 'Chi squared':
+            # both are numeric, no need to make sure all levels are present
             numeric_df = relevant_columns_dataset.select_dtypes(include=np.number)
-            outlier_rows = np.where((np.abs(stats.zscore(numeric_df)) > ProjectQuestion.OUTLIER_THRESH).any(axis=1))[0]
-            inlier_rows = np.where((np.abs(stats.zscore(numeric_df)) < ProjectQuestion.INLIER_THRESH).all(axis=1))[0]
+            outlier_rows = \
+                np.where((np.abs(stats.zscore(numeric_df)) > ProjectQuestion.OUTLIER_THRESH).any(axis=1))[0]
+            inlier_rows = np.where((np.abs(stats.zscore(numeric_df)) < ProjectQuestion.INLIER_THRESH).all(axis=1))[
+                0]
             if self._num_entries > outlier_rows.size + inlier_rows.size:
                 self._num_entries = inlier_rows.size
             self._seed()
@@ -240,7 +276,29 @@ class ProjectQuestion:
             outlier_rows_idx = np.zeros_like(relevant_columns_dataset.index).astype(bool)
             outlier_rows_idx[np.random.choice(outlier_rows, num_outliers, replace=False)] = 1
             inlier_rows_idx = np.zeros_like(relevant_columns_dataset.index).astype(bool)
-            inlier_rows_idx[np.random.choice(inlier_rows, num_inliers, replace=False)] = 1
+            if self._q_type == "Regression":
+                inlier_rows_idx[np.random.choice(inlier_rows, num_inliers, replace=False)] = 1
+            else:  # t-test, anova 1/2 way - need to make sure all levels are present
+                if "2-way" not in self._q_type:
+                    # only need vars[1]
+                    unique_vals = relevant_columns_dataset[self._vars[1]].unique()
+                    num_inliers_per_val = num_inliers // unique_vals.size
+                    for val in unique_vals:
+                        val_rows = numeric_df.index[relevant_columns_dataset[self._vars[1]] == val]
+                        inlier_rows_idx[
+                            np.random.choice(val_rows, min(num_inliers_per_val, val_rows.size), replace=False)] = 1
+
+                else:
+                    # need vars[1] and vars[2]
+                    unique_vals1 = relevant_columns_dataset[self._vars[1]].unique()
+                    unique_vals2 = relevant_columns_dataset[self._vars[2]].unique()
+                    num_inliers_per_val_comb = num_inliers // (unique_vals1.size * unique_vals2.size)
+                    for val1 in unique_vals1:
+                        for val2 in unique_vals2:
+                            val_rows = numeric_df.index[(relevant_columns_dataset[self._vars[1]] == val1).to_numpy() & (
+                                    relevant_columns_dataset[self._vars[2]] == val2).to_numpy()]
+                            inlier_rows_idx[np.random.choice(val_rows, min(num_inliers_per_val_comb, val_rows.size),
+                                                             replace=False)] = 1
             # subset the dataset
             self._dataset = relevant_columns_dataset.loc[outlier_rows_idx | inlier_rows_idx, :]
         else:
@@ -252,16 +310,10 @@ class ProjectQuestion:
         self._dataset.reset_index(drop=True, inplace=True)
 
     def _seed(self) -> None:
-        np.random.seed(self._group)
+        np.random.seed(self._group * self._idx)
 
     def print_dataset(self):
         ipd.display(self._dataset)
-
-    def plot(self):
-        if self._q_type == "Regression":
-            Utils.scatter(self._dataset, self._vars[0], self._vars[1])
-        if self._q_type == "ANOVA 2-way":
-            Utils.scatter(self._dataset, self._vars[1], self._vars[0], self._vars[2])
 
 
 class Project:
@@ -301,7 +353,7 @@ class Project:
             if Project.REPEAT_Q_TYPES:
                 while sum([q.is_same(q_params) for q in self._questions]) > 0:
                     q_params = np.random.choice(q_options)
-            self._questions.append(ProjectQuestion(self._group, key, q_params, self._outliers[i]))
+            self._questions.append(ProjectQuestion(self._group, key, q_params, self._outliers[i], i + 1))
 
     def _seed(self) -> None:
         np.random.seed(self._group)
@@ -321,9 +373,10 @@ for key, value in tqdm(questions.items()):
     count = 1
     qs[key] = []
     for q_params in value:
-        q = ProjectQuestion(1, key, q_params, False)
+        q = ProjectQuestion(1, key, q_params, False, count)
         qs[key].append(q)
         q_list.append({"test": key, "count": count, "variables": q_params, "question": q.__repr__()})
         count += 1
 
 # %%
+pd.DataFrame(q_list).to_csv("all_questions.csv")
