@@ -157,7 +157,7 @@ class Utils:
                 and Utils.validate_var_name(q, col2) and
                 Utils.validate_var_value(q, col2, col2_val1) and
                 Utils.validate_var_value(q, col2, col2_val2)):
-            return None
+            return lambda df: None
         if method == "paired":
             return lambda df, col1=col1, col2=col2, col2_val1=col2_val1, col2_val2=col2_val2, alternative=alternative: \
                 stats.ttest_rel(df.loc[df[col2] == col2_val1, col1], df.loc[df[col2] == col2_val2, col1],
@@ -176,7 +176,7 @@ class Utils:
                 Utils.validate_var_value(q, col2, col2_val1) and
                 Utils.validate_var_value(q, col2, col2_val2) and
                 Utils.validate_var_value(q, col1, col1_val)):
-            return None
+            return lambda df: None
         if method == "paired":
             return lambda df, col1=col1, col1_val=col1_val, col2=col2, col2_val1=col2_val1, col2_val2=col2_val2, \
                           alternative=alternative: stats.ttest_rel(df.loc[(df[col2] == col2_val1).to_numpy() &
@@ -215,49 +215,100 @@ class Utils:
     def rm_anova(q, dependent_var, subject, factor1):
         return AnovaRM(q.get_dataset(), f'{dependent_var}', f'{subject}', [f'{factor1}']).fit().anova_table
 
-    # TODO: implement
     @staticmethod
-    def mann_whitney():
-        pass
+    def get_mann_whitney_func(q, col1, col2, col2_val1, col2_val2):
+        if not (Utils.validate_var_name(q, col1)
+                and Utils.validate_var_name(q, col2) and
+                Utils.validate_var_value(q, col2, col2_val1) and
+                Utils.validate_var_value(q, col2, col2_val2)):
+            return lambda df: None
+        return lambda df, col1=col1, col2=col2, col2_val1=col2_val1, col2_val2=col2_val2: \
+            stats.mannwhitneyu(df.loc[df[col2] == col2_val1, col1], df.loc[df[col2] == col2_val2, col1])
+
+    @staticmethod
+    def mann_whitney_test(q, col1, col2, col2_val1, col2_val2):
+        return Utils.get_mann_whitney_func(q, col1, col2, col2_val1, col2_val2)(q.get_dataset())
+
+    @staticmethod
+    def get_regress_func(q, dep_var, indep_var):
+        if not (Utils.validate_var_name(q, dep_var) and Utils.validate_var_name(q, indep_var)):
+            return None
+        return lambda df, dep_var=dep_var, indep_var=indep_var: stats.linregress(q[dep_var], q[indep_var])
+
+    @staticmethod
+    def regress(q, dep_var, indep_var):
+        res = Utils.get_regress_func(q, dep_var, indep_var)(q.get_dataset())
+        if res is not None:
+            slope, intercept, rvalue, pvalue, stderr, intercept_stderr = res
+            return slope, intercept, rvalue, pvalue
+        else:
+            return None
+
+    @staticmethod
+    def get_spearman_correlation_func(q, var1, var2):
+        if not (Utils.validate_var_name(q, var1) and Utils.validate_var_name(q, var2)):
+            return lambda df: None
+        return lambda df, var=var1, var2=var2: stats.spearmanr(q[var1], q[var2])
+
+    @staticmethod
+    def spearman_correlation(q, var1, var2):
+        return Utils.get_spearman_correlation_func(q, var1, var2)(q.get_dataset())
+
+    @staticmethod
+    def get_pearson_correlation_func(q, var1, var2):
+        if not (Utils.validate_var_name(q, var1) and Utils.validate_var_name(q, var2)):
+            return lambda df: None
+        return lambda df, var=var1, var2=var2: stats.pearsonr(q[var1], q[var2])
+
+    @staticmethod
+    def pearson_correlation(q, var1, var2):
+        return Utils.get_pearson_correlation_func(q, var1, var2)(q.get_dataset())
 
     # TODO: implement
     @staticmethod
-    def regress():
-        pass
+    def get_chi_for_indep_func(q, var1, var2):
+        if not (Utils.validate_var_name(q, var1) and Utils.validate_var_name(q, var2)):
+            return lambda df: None
+        return lambda df, var1=var1, var2=var2: stats.chi2_contingency(pd.crosstab(df[var1], df[var2]))[:2]
+
+    @staticmethod
+    def chi_for_indep(q, var1, var2):
+        return Utils.get_chi_for_indep_func(q, var1, var2)(q.get_dataset())
 
     # TODO: implement
     @staticmethod
-    def spearman_correlation():
-        pass
-
-    # TODO: implement
-    @staticmethod
-    def pearson_correlation():
-        pass
-
-    # TODO: implement
-    @staticmethod
-    def chi_for_indep():
-        pass
-
-    # TODO: implement
-    @staticmethod
-    def cohens_d():
-        pass
+    def cohens_d(q, col1, col2, col2_val1, col2_val2):
+        if not (Utils.validate_var_name(q, col1)
+                and Utils.validate_var_name(q, col2) and
+                Utils.validate_var_value(q, col2, col2_val1) and
+                Utils.validate_var_value(q, col2, col2_val2)):
+            return None
+        df = q.get_dataset()
+        x = df[col1][df[col2] == col2_val1]
+        y = df[col1][df[col2] == col2_val2]
+        nx = len(x)
+        ny = len(y)
+        dof = nx + ny - 2
+        return (np.mean(x) - np.mean(y)) / np.sqrt(
+            ((nx - 1) * np.std(x, ddof=1) ** 2 + (ny - 1) * np.std(y, ddof=1) ** 2) / dof)
 
     @staticmethod
     def eta_squared(aov_res):
         return (aov_res["sum_sq"] / aov_res["sum_sq"].sum())[:-1].rename("eta^2")
 
-    # TODO: implement
     @staticmethod
-    def r_squared_pearson_or_regression():
-        pass
+    def r_squared_pearson_or_regression(q, var1, var2):
+        res = Utils.pearson_correlation(q, var1, var2)
+        if res is None:
+            return None
+        return res[0] ** 2
 
-    # TODO: implement
     @staticmethod
-    def r_squared_spearman():
-        pass
+    def r_squared_spearman(q, var1, var2):
+        res = Utils.spearman_correlation(q, var1, var2)
+        if res is None:
+            return None
+        return res[0] ** 2
 
     # TODO: implement
     @staticmethod
@@ -266,13 +317,18 @@ class Utils:
 
     # TODO: implement
     @staticmethod
-    def multiple_hyp_thresh_bon():
-        pass
+    def multiple_hyp_thresh_bon(alpha, number_of_comparisons):
+        return alpha / number_of_comparisons
 
     # TODO: implement
     @staticmethod
-    def multiple_hyp_thresh_fdr():
-        pass
+    def multiple_hyp_thresh_fdr(p_values_list, alpha):
+        p_values_list = np.array(p_values_list)
+        m = p_values_list.size
+        sorting_idx = np.argsort(p_values_list)[::-1]
+        for i, idx in enumerate(sorting_idx):
+            if p_values_list[idx] < (i + 1) * (alpha / m):
+                return (i + 1) * (alpha / m)
 
     @staticmethod
     def validate_var_name(q, col1):
@@ -468,17 +524,17 @@ class Project:
         self._id = id
         self._possible_questions, self._questions_extra_str = Utils.get_questions()
         self._seed()
-        self._question_types = np.random.choice(self._possible_questions.keys(), replace=Project.REPEAT_Q_TYPES,
+        self._question_types = np.random.choice(list(self._possible_questions.keys()), replace=Project.REPEAT_Q_TYPES,
                                                 size=Project.NUM_QUESTIONS)
         self._extra_var = None
-        if 'Anova 1-way' in self._question_types.keys():
+        if 'Anova 1-way' in self._question_types:
             self._extra_var = bool(np.random.binomial(1, 0.5, 1))
         self._questions = []
         self._generate_questions()
 
     def _generate_questions(self):
         self._seed()
-        self._outliers = np.random.binomial(1, 0.5, len(self._question_types.keys())).astype(bool)
+        self._outliers = np.random.binomial(1, 0.5, len(self._question_types)).astype(bool)
         for i, key in enumerate(self._question_types):
             if key == 'Anova 1-way':
                 if self._extra_var:
@@ -491,10 +547,10 @@ class Project:
                                  if len(q) == 3]
             else:
                 q_options = list(zip(self._possible_questions[key], self._questions_extra_str[key]))
-            q_params = np.random.choice(q_options)
+            q_params = q_options[np.random.choice(np.arange(len(q_options)))]
             if Project.REPEAT_Q_TYPES:
                 while sum([q.is_same(q_params) for q in self._questions]) > 0:
-                    q_params = np.random.choice(q_options)
+                    q_params = q_options[np.random.choice(np.arange(len(q_options)))]
             self._questions.append(
                 ProjectQuestion(self._group, key, q_params[0], q_params[1], self._outliers[i], i + 1))
 
@@ -522,5 +578,9 @@ for key, value in tqdm(questions.items()):
         count += 1
 
 # %%
-pd.DataFrame(q_list).to_csv("all_questions.csv")
-q = qs["Repeated Measures ANOVA"][0]
+p = Project(111,"315594044")
+p[2]
+# pd.DataFrame(q_list).to_csv("all_questions.csv")
+# q = qs["Repeated Measures ANOVA"][0]
+# smoke_data = Utils.get_dataset("smoke_ban")
+# smoke_data
