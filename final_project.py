@@ -12,7 +12,6 @@ from tqdm import tqdm
 from functools import lru_cache
 
 
-
 class Utils:
     """
     This class provides statistic and parsing utilities to be used by the other classes
@@ -28,7 +27,7 @@ class Utils:
         return pd.read_csv(Utils.DATA_PATH + dataset_name + ".csv")
 
     @staticmethod
-    def get_questions() -> dict:
+    def get_questions() -> tuple[dict, dict]:
         """
         Reads the data tagging CSV and parses it into a dictionary whose keys are different statistical tests
         and values are list of question parameters
@@ -36,50 +35,69 @@ class Utils:
         """
         # get from github
         questions = pd.read_csv(Utils.DATA_PATH + r"stat_final_project_data_tagging.csv")
-        test_variables = dict()
+        question_parameters = dict()
+        question_extra_str = dict()
         # start parsing
         for test in questions["test"].unique():
-            if test not in test_variables.keys():
-                test_variables[test] = []
+            if test not in question_parameters.keys():
+                question_parameters[test] = []
+                question_extra_str[test] = []
             # subset just what we need
             test_df = questions.loc[questions["test"] == test, :]
             possible_combs = []
+            extra_strs = []
             # for each row generate all possible questions
             for idx, row in test_df.iterrows():
                 dependent_vars = [s for s in re.split("; *", str(row["dependent_var"])) if s and s != 'nan']
                 independent_vars1 = [s for s in re.split("; *", str(row["independent_var1"])) if s and s != 'nan']
                 independent_vars2 = [s for s in re.split("; *", str(row["independent_var2"])) if s and s != 'nan']
                 extra_vars = [s for s in re.split("; *", str(row["extra_independent_vars"])) if s and s != 'nan']
+                cur_extra_str = str(row["independent_var_str_addition"])
+                cur_extra_str = (" " + cur_extra_str) if cur_extra_str != 'nan' else ""
+
                 if dependent_vars:  # not chi-squared
                     if independent_vars1 and independent_vars2:  # 2-way anova
                         possible_combs += [(str(row["data"]), dep, indep1, indep2) for dep in dependent_vars for indep1
                                            in independent_vars1 for indep2 in
                                            independent_vars2 if dep != indep1 and dep != indep2 and indep1 != indep2]
+                        extra_strs += [cur_extra_str for dep in dependent_vars for indep1
+                                       in independent_vars1 for indep2 in
+                                       independent_vars2 if dep != indep1 and dep != indep2 and indep1 != indep2]
                         if extra_vars:
                             print(
                                 f"Error! Two way anova with an extra independent variable, "
                                 f"meaning 3-way anova required! Row {idx}", file=sys.stderr)
                     else:
                         if extra_vars:  # one way anova framing that should be performed as anova 2-way
-                            if 'ANOVA 1-way' not in test_variables.keys():
-                                test_variables['ANOVA 1-way'] = []
-                            test_variables['ANOVA 1-way'] += [(str(row["data"]), dep, indep1, extra) for dep in
-                                                              dependent_vars for indep1 in
-                                                              independent_vars1 for extra in extra_vars if
-                                                              dep != indep1 and dep != extra and indep1 != extra]
+                            if 'ANOVA 1-way' not in question_parameters.keys():
+                                question_parameters['ANOVA 1-way'] = []
+                                question_extra_str['ANOVA 1-way'] = []
+                            question_parameters['ANOVA 1-way'] += [(str(row["data"]), dep, indep1, extra) for dep in
+                                                                   dependent_vars for indep1 in
+                                                                   independent_vars1 for extra in extra_vars if
+                                                                   dep != indep1 and dep != extra and indep1 != extra]
+                            question_extra_str['ANOVA 1-way'] += [cur_extra_str for dep in
+                                                                  dependent_vars for indep1 in
+                                                                  independent_vars1 for extra in extra_vars if
+                                                                  dep != indep1 and dep != extra and indep1 != extra]
                         else:  # any other test
                             possible_combs += [(str(row["data"]), dep, indep1) for dep in dependent_vars for indep1 in
                                                independent_vars1 if dep != indep1]
+                            extra_strs += [cur_extra_str for dep in dependent_vars for indep1 in
+                                           independent_vars1 if dep != indep1]
 
                 else:  # chi squared
                     possible_combs += [(str(row["data"]), indep1, indep2) for indep1 in independent_vars1 for indep2 in
                                        independent_vars2 if indep1 != indep2]
+                    extra_strs += [cur_extra_str for indep1 in independent_vars1 for indep2 in
+                                   independent_vars2 if indep1 != indep2]
                     if extra_vars:
                         print(
                             f"Error! It doesn't make sense to have an "
                             f"extra variable for a 2-variable chi-square test! Row {idx}", file=sys.stderr)
-            test_variables[test] += possible_combs[:]
-        return test_variables
+            question_parameters[test] += possible_combs[:]
+            question_extra_str[test] += extra_strs[:]
+        return question_parameters, question_extra_str
 
     # scatter plot df[x] vs df[y], if color!=None, use it for hue
     @staticmethod
@@ -199,13 +217,14 @@ class ProjectQuestion:
     INLIER_THRESH = 1.5  # outlier threshold in multiples of standard deviation
     DEF_NUM_ENTRIES = 100
 
-    def __init__(self, group: int, q_type: str, q_params: tuple, outliers: bool, idx):
+    def __init__(self, group: int, q_type: str, q_params: tuple, extra_str: str, outliers: bool, idx):
         self._group = group
         self._idx = idx
         self._num_entries = ProjectQuestion.DEF_NUM_ENTRIES
         self._q_type = q_type
         self._full_dataset = Utils.get_dataset(q_params[0])
         self._vars = list(q_params[1:])
+        self._extra_str = extra_str
         self._outliers = outliers
         self._dataset = None
         self._choose_dataset()
@@ -223,22 +242,30 @@ class ProjectQuestion:
 
     def __repr__(self):
         if self._q_type == 'Chi squared':
-            return "Are %s and %s independent?" % tuple(self._vars)
+            ret_str = f"Are %s{self._extra_str} and %s{self._extra_str} independent?"
+            return ret_str % tuple(self._vars)
         elif self._q_type == 'ANOVA 2-way':
-            return "Do %s or %s have an effect on %s? Does the effect of %s change for different levels of %s?" % (
-                self._vars[1], self._vars[2], self._vars[0], self._vars[1], self._vars[2])
+            ret_str = f"Do %s{self._extra_str} or %s{self._extra_str} have an effect on %s{self._extra_str}? " \
+                      f"Does the effect of %s{self._extra_str} on %s{self._extra_str} for different levels of %s " \
+                      f"{self._extra_str}?"
+            return ret_str % (
+                self._vars[1], self._vars[2], self._vars[0], self._vars[1], self._vars[0], self._vars[2])
         elif self._q_type == 'ANOVA 1-way' or self._q_type == 'Repeated Measures ANOVA':
-            return "Does %s have an effect on %s?" % (self._vars[1], self._vars[0])
+            ret_str = f"Does %s{self._extra_str} have an effect on %s{self._extra_str}?"
+            return ret_str % (self._vars[1], self._vars[0])
         elif self._q_type == 'Regression':
-            return "What is the relationship between %s and %s and is it significant?" % tuple(self._vars)
+            ret_str = f"What is the relationship between %s{self._extra_str} and %s{self._extra_str} and is it significant?"
+            return ret_str % tuple(self._vars)
         elif self._q_type == 'independent samples t-test' or self._q_type == 'paired t-test':
             unique_y = self._dataset[self._vars[1]].unique()
             self._seed()
-            return "Is %s %s for %s=%s compared to %s=%s?" % (
+            ret_str = f"Is %s{self._extra_str} %s for %s=%s compared to %s=%s?"
+            return ret_str % (
                 self._vars[0], np.random.choice(['larger', 'smaller', 'different']), self._vars[1], unique_y[0],
                 self._vars[1], unique_y[1])
         elif self._q_type == 'Mann Whitney':
-            return "Do %s distributions differ based on %s?" % tuple(self._vars)
+            ret_str = f"Do %s{self._extra_str} distributions differ based on %s{self._extra_str}?"
+            return ret_str % tuple(self._vars)
 
     def is_same(self, q_params):
         """
@@ -328,7 +355,7 @@ class Project:
     def __init__(self, group: int, id: str):
         self._group = group
         self._id = id
-        self._possible_questions = Utils.get_questions()
+        self._possible_questions, self._questions_extra_str = Utils.get_questions()
         self._seed()
         self._question_types = np.random.choice(self._possible_questions.keys(), replace=Project.REPEAT_Q_TYPES,
                                                 size=Project.NUM_QUESTIONS)
@@ -344,16 +371,21 @@ class Project:
         for i, key in enumerate(self._question_types):
             if key == 'Anova 1-way':
                 if self._extra_var:
-                    q_options = [q for q in self._possible_questions[key] if len(q) == 4]
+                    q_options = [(q, self._questions_extra_str[key][i]) for i, q in
+                                 enumerate(self._possible_questions[key])
+                                 if len(q) == 4]
                 else:
-                    q_options = [q for q in self._possible_questions[key] if len(q) == 3]
+                    q_options = [(q, self._questions_extra_str[key][i]) for i, q in
+                                 enumerate(self._possible_questions[key])
+                                 if len(q) == 3]
             else:
-                q_options = self._possible_questions[key]
+                q_options = list(zip(self._possible_questions[key], self._questions_extra_str[key]))
             q_params = np.random.choice(q_options)
             if Project.REPEAT_Q_TYPES:
                 while sum([q.is_same(q_params) for q in self._questions]) > 0:
                     q_params = np.random.choice(q_options)
-            self._questions.append(ProjectQuestion(self._group, key, q_params, self._outliers[i], i + 1))
+            self._questions.append(
+                ProjectQuestion(self._group, key, q_params[0], q_params[1], self._outliers[i], i + 1))
 
     def _seed(self) -> None:
         np.random.seed(self._group)
@@ -366,14 +398,14 @@ class Project:
 
 
 # %% tests
-questions = Utils.get_questions()
+questions, extra = Utils.get_questions()
 q_list = []
 qs = dict()
 for key, value in tqdm(questions.items()):
     count = 1
     qs[key] = []
-    for q_params in value:
-        q = ProjectQuestion(1, key, q_params, False, count)
+    for i, q_params in enumerate(value):
+        q = ProjectQuestion(1, key, q_params, extra[key][i], False, count)
         qs[key].append(q)
         q_list.append({"test": key, "count": count, "variables": q_params, "question": q.__repr__()})
         count += 1
