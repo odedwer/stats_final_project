@@ -3,7 +3,8 @@ import scipy.stats as stats
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
-import statsmodels as sm
+from statsmodels.stats.api import anova_lm, AnovaRM
+from statsmodels.formula.api import ols
 import IPython.display as ipd
 import ipywidgets as wd
 import re
@@ -136,6 +137,12 @@ class Utils:
         plt.axvline(0, ymax=n.max() * 1.1, linestyle=":", color="k")
         return perm_dist, statistic
 
+    # perform permutation test fo the statistic func where the permuted label is to_permute.
+    @staticmethod
+    def permutation_test(df: pd.DataFrame, to_permute, statistic_func):
+        perm_dist, statistic = Utils.permutation(df, to_permute, statistic_func)
+        print(f"Percentage of permutations below the statistic: f{np.mean(perm_dist < statistic)}")
+
     # reject entries based on SD threshold. Print how many were rejected and return the df without the rejected points
     @staticmethod
     def sd_reject(df: pd.DataFrame, reject_columns, thresh):
@@ -143,12 +150,6 @@ class Utils:
         outliers = (np.abs(stats.zscore(numeric_df)) < thresh).any(axis=1)
         print(f"{np.sum(outliers)} rejected based on rejection criteria of {thresh} standard deviations")
         return df.loc[~outliers,]
-
-    # perform permutation test fo the statistic func where the permuted label is to_permute.
-    @staticmethod
-    def permutation_test(df: pd.DataFrame, to_permute, statistic_func):
-        perm_dist, statistic = Utils.permutation(df, to_permute, statistic_func)
-        print(f"Percentage of permutations below the statistic: f{np.mean(perm_dist < statistic)}")
 
     @staticmethod
     def get_t_test_func(q, col1, col2, col2_val1, col2_val2, method, alternative):
@@ -169,18 +170,123 @@ class Utils:
             print(f"t-test can only be for paired/independent!", file=sys.stderr)
 
     @staticmethod
+    def get_t_test_func_for_subset(q, col1, col1_val, col2, col2_val1, col2_val2, method, alternative):
+        if not (Utils.validate_var_name(q, col1)
+                and Utils.validate_var_name(q, col2) and
+                Utils.validate_var_value(q, col2, col2_val1) and
+                Utils.validate_var_value(q, col2, col2_val2) and
+                Utils.validate_var_value(q, col1, col1_val)):
+            return None
+        if method == "paired":
+            return lambda df, col1=col1, col1_val=col1_val, col2=col2, col2_val1=col2_val1, col2_val2=col2_val2, \
+                          alternative=alternative: stats.ttest_rel(df.loc[(df[col2] == col2_val1).to_numpy() &
+                                                                          (df[col1] == col1_val).to_numpy(), col1],
+                                                                   df.loc[(df[col2] == col2_val2).to_numpy() &
+                                                                          (df[col1] == col1_val).to_numpy(), col1],
+                                                                   alternative=alternative)
+        elif method == "independent":
+            return lambda df, col1=col1, col1_val=col1_val, col2=col2, col2_val1=col2_val1, col2_val2=col2_val2, \
+                          alternative=alternative: stats.ttest_ind(df.loc[(df[col2] == col2_val1).to_numpy() &
+                                                                          (df[col1] == col1_val).to_numpy(), col1],
+                                                                   df.loc[(df[col2] == col2_val2).to_numpy() &
+                                                                          (df[col1] == col1_val).to_numpy(), col1],
+                                                                   alternative=alternative)
+        else:
+            print(f"t-test can only be for paired/independent!", file=sys.stderr)
+
+    @staticmethod
+    def t_test(q, col1, col2, col2_val1, col2_val2, method, alternative):
+        return Utils.get_t_test_func(q, col1, col2, col2_val1, col2_val2, method, alternative)(q.get_dataset())
+
+    @staticmethod
+    def t_test_for_specific_levels(q, col1, col1_val, col2, col2_val1, col2_val2, method, alternative):
+        return Utils.get_t_test_func_for_subset(q, col1, col1_val, col2, col2_val1, col2_val2, method, alternative)(
+            q.get_dataset())
+
+    @staticmethod
+    def one_way_anova(q, dependent_var, factor):
+        return anova_lm(ols(f"{dependent_var}~{factor}", data=q.get_dataset()).fit())
+
+    @staticmethod
+    def two_way_anova(q, dependent_var, factor1, factor2):
+        return anova_lm(ols(f"{dependent_var}~{factor1}*{factor2}", data=q.get_dataset()).fit())
+
+    @staticmethod
+    def rm_anova(q, dependent_var, subject, factor1):
+        return AnovaRM(q.get_dataset(), f'{dependent_var}', f'{subject}', [f'{factor1}']).fit().anova_table
+
+    # TODO: implement
+    @staticmethod
+    def mann_whitney():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def regress():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def spearman_correlation():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def pearson_correlation():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def chi_for_indep():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def cohens_d():
+        pass
+
+    @staticmethod
+    def eta_squared(aov_res):
+        return (aov_res["sum_sq"] / aov_res["sum_sq"].sum())[:-1].rename("eta^2")
+
+    # TODO: implement
+    @staticmethod
+    def r_squared_pearson_or_regression():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def r_squared_spearman():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def multiple_hyp_thresh_perm():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def multiple_hyp_thresh_bon():
+        pass
+
+    # TODO: implement
+    @staticmethod
+    def multiple_hyp_thresh_fdr():
+        pass
+
+    @staticmethod
     def validate_var_name(q, col1):
-        if col1 not in q._dataset.columns:
-            print(f"{col1} isn't a variable in the dataset!\n possible variables: {q._dataset.columns}",
+        if col1 not in q.get_dataset().columns:
+            print(f"{col1} isn't a variable in the dataset!\n possible variables: {q.get_dataset().columns}",
                   file=sys.stderr)
             return False
         return True
 
     @staticmethod
     def validate_var_value(q, col, val):
-        if val not in q._dataset[col]:
+        if val not in q.get_dataset()[col]:
             print(
-                f"{val} isn't a value of in the dataset in column {col}!\n possible values: {q._dataset[col].unique()}",
+                f"{val} isn't a value of in the dataset in column {col}!\n possible values: {q.get_dataset()[col].unique()}",
                 file=sys.stderr)
             return False
         return True
@@ -230,6 +336,9 @@ class ProjectQuestion:
         self._choose_dataset()
         self._filtered_dataset = None
 
+    def get_dataset(self):
+        return self._filtered_dataset if self._filtered_dataset else self._dataset
+
     def reject_outliers(self, columns, thresh):
         if not isinstance(columns, list):
             columns = [columns]
@@ -257,7 +366,7 @@ class ProjectQuestion:
             ret_str = f"What is the relationship between %s{self._extra_str} and %s{self._extra_str} and is it significant?"
             return ret_str % tuple(self._vars)
         elif self._q_type == 'independent samples t-test' or self._q_type == 'paired t-test':
-            unique_y = self._dataset[self._vars[1]].unique()
+            unique_y = self.get_dataset()[self._vars[1]].unique()
             self._seed()
             ret_str = f"Is %s{self._extra_str} %s for %s=%s compared to %s=%s?"
             return ret_str % (
@@ -276,7 +385,9 @@ class ProjectQuestion:
         return False
 
     def _choose_dataset(self):
-        relevant_columns_dataset = self._full_dataset[self._vars]
+        relevant_columns_dataset = self._full_dataset[
+            self._vars] if self._q_type != "Repeated Measures ANOVA" or "subject" not in self._full_dataset.columns else \
+            self._full_dataset[["subject"] + self._vars]
         relevant_columns_dataset: pd.DataFrame = relevant_columns_dataset.dropna()
         relevant_columns_dataset = relevant_columns_dataset.reset_index(drop=True)
         # choose the number of entries
@@ -340,7 +451,7 @@ class ProjectQuestion:
         np.random.seed(self._group * self._idx)
 
     def print_dataset(self):
-        ipd.display(self._dataset)
+        ipd.display(self.get_dataset())
 
 
 class Project:
@@ -412,3 +523,4 @@ for key, value in tqdm(questions.items()):
 
 # %%
 pd.DataFrame(q_list).to_csv("all_questions.csv")
+q = qs["Repeated Measures ANOVA"][0]
