@@ -167,7 +167,7 @@ class Utils:
 
     # calculate the statistic_func on the df with permuted df[to_permute] and return the created distribution
     @staticmethod
-    def permutation(df: pd.DataFrame, to_permute, statistic_func):
+    def within_column_permutation(df: pd.DataFrame, to_permute, statistic_func):
         perm_dist = np.zeros(10000, dtype=float)
         for i in range(10000):
             perm_df = df.copy()
@@ -175,7 +175,21 @@ class Utils:
             perm_dist[i] = statistic_func(perm_df)
         n, bins, _ = plt.hist(perm_dist)
         statistic = statistic_func(df)
-        plt.axvline(0, ymax=n.max() * 1.1, linestyle=":", color="k")
+        plt.axvline(statistic, 0, ymax=n.max() * 1.1, linestyle=":", color="r", linewidth=4)
+        return perm_dist, statistic
+
+    def between_column_permutation(df: pd.DataFrame, to_permute1, to_permute2, statistic_func):
+        perm_dist = np.zeros(10000, dtype=float)
+        value_pool = np.concatenate([df[to_permute1].to_numpy(), df[to_permute2].to_numpy()])
+        for i in range(10000):
+            perm_df = df.copy()
+            np.shuffle(value_pool)
+            perm_df[to_permute1] = value_pool[:len(perm_df[to_permute1])]
+            perm_df[to_permute2] = value_pool[len(perm_df[to_permute1]):]
+            perm_dist[i] = statistic_func(perm_df)
+        n, bins, _ = plt.hist(perm_dist)
+        statistic = statistic_func(df)
+        plt.axvline(statistic, 0, ymax=n.max() * 1.1, linestyle=":", color="r", linewidth=4)
         return perm_dist, statistic
 
     # perform permutation test fo the statistic func where the permuted label is to_permute.
@@ -244,13 +258,19 @@ class Utils:
             print(f"t-test can only be for paired/independent!")
 
     @staticmethod
-    def column_t_test(q, col1, col2, method, alternative):
+    def get_column_ttest_func(q, col1, col2, method, alternative):
         if not (Utils.validate_var_name(q, col1) and Utils.validate_var_name(q, col2)):
             return None
         if method == "independent samples":
-            res = stats.ttest_ind(q.get_dataset()[col1], q.get_dataset()[col2], alternative=alternative)
+            return lambda df, col1=col1, col2=col2, method=method, alternative=alternative: \
+                stats.ttest_ind(df[col1], q.get_dataset()[col2], alternative=alternative)
         else:
-            res = stats.ttest_rel(q.get_dataset()[col1], q.get_dataset()[col2], alternative=alternative)
+            return lambda df, col1=col1, col2=col2, method=method, alternative=alternative: \
+                stats.ttest_rel(df[col1], q.get_dataset()[col2], alternative=alternative)
+
+    @staticmethod
+    def column_t_test(q, col1, col2, method, alternative):
+        res = Utils.get_column_ttest_func(q, col1, col2, method, alternative)(q.get_dataset())
         if res: print(f"t-statistic: {res[0]}\np-value: {np.format_float_scientific(res[1], precision=3)}")
 
     @staticmethod
@@ -517,6 +537,7 @@ class GUI:
                            "Linear regression": self.regress,
                            "Spearman correlation": self.spearman_correlation,
                            "Pearson correlation": self.pearson_correlation,
+                           "Permutation test": self.permutation_test,
                            "Cohen's d between columns": self.cohens_d_columns,
                            "Cohen's d by level": self.cohens_d,
                            "Eta squared for one-way ANOVA": self.eta_squared_for_oneway,
@@ -574,10 +595,9 @@ class GUI:
         )
 
         def on_change(change, changed_widg=widget, widg=new_widget, df=self.q.get_dataset()):
-            if change['new'] in changed_widg.options:
-                widg.options = df[change['new']].unique()
+            widg.options = df[change['new']].unique()
 
-        widget.observe(on_change)
+        widget.observe(on_change, names='value')
         return new_widget
 
     def get_stats_dropdown(self):
@@ -641,12 +661,37 @@ class GUI:
                            col=self.get_columns_dropdown("Column to calculate bootstrap on:"),
                            statistic_func=self.get_stats_dropdown())
 
-    def permutation(self, q: pd.DataFrame, to_permute, statistic_func):
+    def show_permutation_test_interact(self, change):
+        ipd.clear_output()
+        ipd.display(self._test_type_widg)
+        test_type = change['new']
+        print(test_type)
+        if test_type == "independent t-test between columns":
+            col1_wd = self.get_columns_dropdown("t-test Sample 1 column: ")
+            col2_wd = self.get_columns_dropdown("t-test Sample 2 column: ")
+            alternative_wd = self.get_alternative_dropdown()
 
-        pass
+            wd.interact_manual(
+                lambda q, col1, col2, method, alternative: Utils.between_column_permutation(q.get_dataset(), to_permute,
+                                                                                            lambda df:
+                                                                                            Utils.get_column_ttest_func(
+                                                                                                q, col1, col2, method,
+                                                                                                alternative)(df)[0]),
+                q=wd.fixed(self.q), to_permute=to_permute_wd, col1=col1_wd, col2=col2_wd,
+                method=wd.fixed("independent samples"), alternative=alternative_wd)
 
-    def permutation_test(self, q: pd.DataFrame, to_permute, statistic_func):
-        pass
+    def permutation_test(self):
+        test_options = ["t-test between columns", "t-test by level", "Simple effect t-test", "One way ANOVA",
+                        "Two way ANOVA", "Mann-Whitney test between columns", "Mann-Whitney test by level",
+                        "Linear regression", "Spearman correlation", "Pearson correlation"]
+        self._test_type_widg = wd.Dropdown(
+            options=test_options,
+            value=None,
+            description="Statistic for permutation: ",
+            layout=wd.Layout(min_width='50%'), style={'description_width': 'initial'},
+        )
+        self._test_type_widg.observe(self.show_permutation_test_interact, names="value")
+        ipd.display(self._test_type_widg)
 
     def sd_reject(self):
         inter = wd.interact_manual(self.q.reject_outliers,
@@ -748,7 +793,7 @@ class GUI:
         inter.widget.children[2].description = "Run"
 
     def chi_for_indep(self):
-        inter = wd.interact_manual(Utils.pearson_correlation, q=wd.fixed(self.q),
+        inter = wd.interact_manual(Utils.chi_for_indep, q=wd.fixed(self.q),
                                    var1=self.get_columns_dropdown("Variable 1 column:"),
                                    var2=self.get_columns_dropdown("Variable 2 column:"))
         inter.widget.children[2].description = "Run"
@@ -952,6 +997,9 @@ class ProjectQuestion:
                         for val2 in unique_vals2:
                             val_rows = numeric_df.index[(relevant_columns_dataset[self._vars[1]] == val1).to_numpy() & (
                                     relevant_columns_dataset[self._vars[2]] == val2).to_numpy()]
+                            if val_rows.size == 0:
+                                self._dataset = None
+                                return
                             inlier_rows_idx[np.random.choice(val_rows, min(num_inliers_per_val_comb, val_rows.size),
                                                              replace=False)] = 1
             # subset the dataset
@@ -1012,23 +1060,26 @@ class Project:
         self._seed()
         self._outliers = np.random.binomial(1, 0.5, len(self._question_types)).astype(bool)
         for i, key in enumerate(self._question_types):
-            if key == 'Anova 1-way':
-                if self._extra_var:
-                    q_options = [(q, self._questions_extra_str[key][i]) for i, q in
-                                 enumerate(self._possible_questions[key])
-                                 if len(q) == 4]
+            q = None
+            while (q is None):
+                if key == 'Anova 1-way':
+                    if self._extra_var:
+                        q_options = [(q, self._questions_extra_str[key][i]) for i, q in
+                                     enumerate(self._possible_questions[key])
+                                     if len(q) == 4]
+                    else:
+                        q_options = [(q, self._questions_extra_str[key][i]) for i, q in
+                                     enumerate(self._possible_questions[key])
+                                     if len(q) == 3]
                 else:
-                    q_options = [(q, self._questions_extra_str[key][i]) for i, q in
-                                 enumerate(self._possible_questions[key])
-                                 if len(q) == 3]
-            else:
-                q_options = list(zip(self._possible_questions[key], self._questions_extra_str[key]))
-            q_params = q_options[np.random.choice(np.arange(len(q_options)))]
-            if Project.REPEAT_Q_TYPES:
-                while sum([q.is_same(q_params) for q in self._questions]) > 0:
-                    q_params = q_options[np.random.choice(np.arange(len(q_options)))]
-            self._questions.append(
-                ProjectQuestion(self._group, key, q_params[0], q_params[1], self._outliers[i], i + 1))
+                    q_options = list(zip(self._possible_questions[key], self._questions_extra_str[key]))
+                q_params = q_options[np.random.choice(np.arange(len(q_options)))]
+                if Project.REPEAT_Q_TYPES:
+                    while sum([q.is_same(q_params) for q in self._questions]) > 0:
+                        q_params = q_options[np.random.choice(np.arange(len(q_options)))]
+                q = ProjectQuestion(self._group, key, q_params[0], q_params[1], self._outliers[i], i + 1)
+                if q._dataset is not None:
+                    self._questions.append(q)
 
     def _seed(self) -> None:
         np.random.seed(self._group)
@@ -1040,7 +1091,7 @@ class Project:
         return self._questions[idx]
 
 
-group = 111  # @param {type:"number"}
+group = 97  # @param {type:"number"}
 id = "315594044"  # @param {type:"string"}
 #%%
 questions, extra = Utils.get_questions()
